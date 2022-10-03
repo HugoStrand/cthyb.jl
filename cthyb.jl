@@ -1,4 +1,11 @@
+raw"""
+Segment picture hybridization expansion
 
+Author: Hugo U.R. Strand (2022)
+
+"""
+
+import PyCall
 using LinearAlgebra
 
 struct Configuration
@@ -16,12 +23,20 @@ Base.:length(c::Configuration) = length(c.t_i)
 struct Hybridization
     times::Vector{Float64}
     values::Vector{Float64}
+    β::Float64
 end
 
 function (Δ::Hybridization)(time::Float64)::Float64
-    s = sign(time)
-    time = mod(time, 1)
+    #@show time
+    s = time < 0. ? -1. : 1.
+    #@show s
+    time = mod(time, Δ.β)
+    #@show time
     idx = searchsortedfirst(Δ.times, time)
+    #@show idx
+    if idx == 1
+        idx = 2
+    end
     ti, tf = Δ.times[idx-1], Δ.times[idx]
     vi, vf = Δ.values[idx-1], Δ.values[idx]
     return s * (vi + (time - ti) * (vf - vi) / (tf - ti))
@@ -225,25 +240,47 @@ function sample_greens_function!(g::GreensFunction, c::Configuration, e::Expansi
     nt = length(c)
     for i in 1:nt, j in 1:nt
         t_i = c.t_i[i]
-        t_j = c.t_f[j]
+        t_f = c.t_f[j]
         #@show t_i, t_j
-        accumulate!(g, t_j - t_i, M[j, i])
+        accumulate!(g, t_f - t_i, M[j, i])
     end
 end
 
+function semi_circular_g_tau(times, t, h, β)
+
+    np = PyCall.pyimport("numpy")
+    kernel = PyCall.pyimport("pydlr").kernel
+    quad = PyCall.pyimport("scipy.integrate").quad
+
+    #def eval_semi_circ_tau(tau, beta, h, t):
+    #    I = lambda x : -2 / np.pi / t**2 * kernel(np.array([tau])/beta, beta*np.array([x]))[0,0]
+    #    g, res = quad(I, -t+h, t+h, weight='alg', wvar=(0.5, 0.5))
+    #    return g
+
+    g_out = zero(times)
+    
+    for (i, tau) in enumerate(times)
+        I = x -> -2 / np.pi / t^2 * kernel([tau/β], [β*x])[1, 1]
+        g, res = quad(I, -t+h, t+h, weight="alg", wvar=(0.5, 0.5))
+        g_out[i] = g
+    end
+
+    return g_out
+end
+
 β = 20.0
-ϵ = 0.0
 h = 0.0
-V = 1.0
+t = 1.0
 
 N_t = 100
 
 times = range(0., β, N_t)
-values = -V^2 * exp.(-ϵ .* times) / (1 + exp(-ϵ * β))
-Δ = Hybridization(times, values)
-#@show Δ
 
-e = Expansion(β, h, Δ)
+#ϵ = 0.0
+#V = 1.0
+#values = -V^2 * exp.(-ϵ .* times) / (1 + exp(-ϵ * β))
+#Δ = Hybridization(times, values)
+#@show Δ
 
 if false
 
@@ -282,13 +319,21 @@ if false
 
 end
 
+g_ref = semi_circular_g_tau(times, t, h, β)
+#@show g_ref
+
+Δ = Hybridization(times, 0.25 * t^2 * g_ref, β)
+#exit()
+
+e = Expansion(β, h, Δ)
+
 println("Starting CT-HYB QMC")
 
 chunk = 100
 warmup = 1000
 sampling = 10000
 
-nt = 100
+nt = 200
 
 c = Configuration([], [])
 g = GreensFunction(β, nt)
@@ -322,7 +367,12 @@ import PyPlot as plt
 
 t = range(0.0, β, nt)
 plt.plot(t, g.data, "-", label="G")
-plt.plot(Δ.times, Δ.values, "-", label="Delta")
+plt.plot(times, g_ref, "-", label="G (ref)")
+
+times = collect(range(0, β, 1001))
+plt.plot(times, Δ(times), "-", label="Delta")
+plt.plot(Δ.times, Δ.values, ".", label="Delta")
+
 plt.legend(loc="best")
 #plt.ylim([-1, 0])
 plt.show()
