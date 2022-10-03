@@ -134,7 +134,7 @@ function propose(move::InsertMove, c_old::Configuration, e::Expansion)
     old = trace(c_old, e) * Determinant(c_old, e).value
     new = trace(c_new, e) * Determinant(c_new, e).value
 
-    R = e.β^2 / length(c_new)^2 * new / old
+    R = e.β^2 / length(c_new)^2 * abs(new / old)
     
     return R
 end
@@ -176,7 +176,7 @@ function propose(move::RemovalMove, c_old::Configuration, e::Expansion)
     old = trace(c_old, e) * Determinant(c_old, e).value
     new = trace(c_new, e) * Determinant(c_new, e).value
 
-    R = length(c_old)^2 / e.β^2 * new / old
+    R = length(c_old)^2 / e.β^2 * abs(new / old)
     
     return R
 end
@@ -196,12 +196,10 @@ function metropolis_hastings_update(c, e)
     #@show move
     
     R = propose(move, c, e)
-    #R = R > 1 ? 1. : R
     #@show R
     
     # accept/reject move
-    r = rand()
-    if R > 1 || r < R
+    if R > rand()
         c = finalize(move, c)
     end
     #@show length(c)
