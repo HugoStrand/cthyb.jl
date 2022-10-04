@@ -9,20 +9,23 @@ import PyCall
 using LinearAlgebra
 
 struct Configuration
+
     t_i::Vector{Float64}
     t_f::Vector{Float64}
+    
     function Configuration(t_i, t_f)
         @assert length(t_i) == length(t_f)
-        #return length(t_i) == 0 ? new([], []) : new(sort(t_i), sort(t_f))
-        #return length(t_i) == 0 ? new([], []) : new(t_i, t_f)
         if length(t_i) == 0
             return new([], [])
         end
+
         t_i = sort(t_i)
         t_f = sort(t_f)
+
         if first(t_f) < first(t_i)
             push!(t_f, popfirst!(t_f))
         end
+
         return new(t_i, t_f)
     end
 end
@@ -36,23 +39,19 @@ struct Hybridization
 end
 
 function (Δ::Hybridization)(time::Float64)::Float64
-    #@show time
-    #s = time < 0. ? -1.0 : 1.0
-    #@show s
-    #time = mod(time, Δ.β)
+
     s = 1.0
     if time < 0.0
         s = -1.0
         time += Δ.β
     end
-    #@show time
+
     idx = searchsortedfirst(Δ.times, time)
-    #@show idx
-    if idx == 1
-        idx = 2
-    end
+    idx = idx == 1 ? 2 : idx
+    
     ti, tf = Δ.times[idx-1], Δ.times[idx]
     vi, vf = Δ.values[idx-1], Δ.values[idx]
+    
     return s * (vi + (time - ti) * (vf - vi) / (tf - ti))
 end
 
@@ -67,25 +66,12 @@ struct Expansion
 end
 
 struct Determinant
+
     mat::Array{Float64, 2}
     value::Float64
 
     function Determinant(c::Configuration, e::Expansion)
-        #if length(c) == 0
-        #    return new(Matrix{Float64}(undef, 0, 0), 1.0)
-        #end
-        
-        if true
-            if length(c) > 0 && first(c.t_f) < first(c.t_i)
-                t_f = copy(c.t_f)
-                push!(t_f, popfirst!(t_f))
-                mat = [ e.Δ(tf - ti) for tf in t_f, ti in c.t_i ]
-            else
-                mat = [ e.Δ(tf - ti) for tf in c.t_f, ti in c.t_i ]
-            end
-        else
-            mat = [ e.Δ(tf - ti) for tf in c.t_f, ti in c.t_i ]
-        end
+        mat = [ e.Δ(tf - ti) for tf in c.t_f, ti in c.t_i ]
         value = LinearAlgebra.det(mat)
         new(mat, value)
     end
@@ -114,52 +100,33 @@ function trace(c::Configuration, e::Expansion)::Float64
     end
 
     ops = configuration_operators(c)
-    #@show ops
-    
-    first_state = first(ops).operation > 0 ? 0 : 1
-    
+    first_state = first(ops).operation > 0 ? 0 : 1    
     state = copy(first_state)
+
     t_i = 0.0
-
-    #value = (first_state == 1) ? (-1.0)^(length(c)-1) : +1.0
     value = (first_state == 1) ? -1.0 : +1.0
-    #value = (first_state == 1) ? +1.0 : -1.0
-    #value = 1.0
-
-    #@show value
-    #@show first_state
     
     for op in ops
-        t_f = op.time
-
         if state == 1
-            dt = t_f - t_i
-            value *= exp(-e.h * dt)
+            value *= exp(-e.h * (op.time - t_i))
         end
         
-        t_i = t_f
+        t_i = op.time
         state += op.operation
 
         if state < 0 || state > 1
             return 0.0
         end
-
-        #@show value
-        #@show state
     end
 
-    t_f = e.β
-
-    if state == 1
-        dt = t_f - t_i
-        value *= exp(-e.h * dt)
-    end
-    
-    #@show value
     if first_state != state
         return 0.0
     end
-    
+
+    if state == 1
+        value *= exp(-e.h * (e.β - t_i))
+    end
+
     return value
 end
 
@@ -235,20 +202,17 @@ end
 
 function metropolis_hastings_update(c, e)
 
-    # select move
+    # select random move
     moves = [ new_insert_move, new_removal_move ]
     move_idx = rand(1:length(moves))
+
     move = moves[move_idx](c, e)
-    #@show move
     
     R = propose(move, c, e)
-    #@show R
     
-    # accept/reject move
     if R > rand()
         c = finalize(move, c)
     end
-    #@show length(c)
     
     return c
 end
@@ -277,8 +241,8 @@ function accumulate!(g::GreensFunction, time::Float64, value::Float64)
         value *= -1
         time += g.β
     end
-    @assert time >= 0.0
-    @assert time <= g.β
+    #@assert time >= 0.0
+    #@assert time <= g.β
     idx = ceil(Int, length(g) * time / g.β)
     g.data[idx] += value
 end
@@ -323,111 +287,36 @@ end
 h = 0.0
 t = 1.0
 
-N_t = 100
-
-times = range(0., β, N_t)
-
-#ϵ = 0.0
-#V = 1.0
-#values = -V^2 * exp.(-ϵ .* times) / (1 + exp(-ϵ * β))
-#Δ = Hybridization(times, values)
-#@show Δ
-
-if false
-
-    t_i = [0.1, 0.3, 0.5]
-    t_f = [0.2, 0.4, 0.6]
-
-    @show t_i
-    @show t_f
-
-    c = Configuration(t_i, t_f)
-    @show c
-
-    d = Determinant(c, e)
-    @show d
-
-    tr = trace(c, e)
-    @show tr
-
-    move = InsertMove(0.25, 0.29)
-    @show move
-
-    R = propose(move, c, e)
-    @show R
-
-    c = finalize(move, c)
-    @show c
-
-    move = RemovalMove(1, 1)
-    @show move
-
-    R = propose(move, c, e)
-    @show R
-
-    c = finalize(move, c)
-    @show c
-
-end
-
+nt = 200
+times = range(0., β, nt)
 g_ref = semi_circular_g_tau(times, t, h, β)
-#@show g_ref
 
 Δ = Hybridization(times, -0.25 * t^2 * g_ref, β)
-#exit()
 
 e = Expansion(β, h, Δ)
-@show e.β
-@show e.h
 
 println("Starting CT-HYB QMC")
 
-chunk = 10
-warmup = 1000
-sampling = 100000
-
-nt = 200
-
-c = Configuration([], [])
-@show c
-w = eval(c, e)
-@show w
-
-c = Configuration([1.0], [2.0])
-@show c
-d = Determinant(c, e)
-@show d.mat
-@show d.value
-w = eval(c, e)
-@show w
-
-c = Configuration([2.0], [1.0])
-@show c
-d = Determinant(c, e)
-@show d.mat
-@show d.value
-@show trace(c, e)
-w = eval(c, e)
-@show w
-
-#exit()
+epoch_steps = 10
+warmup_epochs = 1000
+sampling_epochs = Int(1e5)
 
 g = GreensFunction(β, nt)
+c = Configuration([], [])
 
-println("Warmup sweeps $warmup with $chunk steps.")
+println("Warmup epochs $warmup_epochs with $epoch_steps steps.")
 
-for s in 1:warmup
-    for i in 1:chunk
+for epoch in 1:warmup_epochs
+    for step in 1:epoch_steps
         global c
         c = metropolis_hastings_update(c, e)
     end    
 end
 
-@show length(c)
-println("Sampling sweeps $sampling with $chunk steps.")
+println("Sampling epochs $sampling_epochs with $epoch_steps steps.")
 
-for s in 1:sampling
-    for i in 1:chunk
+for epoch in 1:sampling_epochs
+    for step in 1:epoch_steps
         global c
         c = metropolis_hastings_update(c, e)
     end
