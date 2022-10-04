@@ -14,7 +14,16 @@ struct Configuration
     function Configuration(t_i, t_f)
         @assert length(t_i) == length(t_f)
         #return length(t_i) == 0 ? new([], []) : new(sort(t_i), sort(t_f))
-        return length(t_i) == 0 ? new([], []) : new(t_i, t_f)
+        #return length(t_i) == 0 ? new([], []) : new(t_i, t_f)
+        if length(t_i) == 0
+            return new([], [])
+        end
+        t_i = sort(t_i)
+        t_f = sort(t_f)
+        if first(t_f) < first(t_i)
+            push!(t_f, popfirst!(t_f))
+        end
+        return new(t_i, t_f)
     end
 end
 
@@ -28,9 +37,14 @@ end
 
 function (Δ::Hybridization)(time::Float64)::Float64
     #@show time
-    s = time < 0. ? -1. : 1.
+    #s = time < 0. ? -1.0 : 1.0
     #@show s
-    time = mod(time, Δ.β)
+    #time = mod(time, Δ.β)
+    s = 1.0
+    if time < 0.0
+        s = -1.0
+        time += Δ.β
+    end
     #@show time
     idx = searchsortedfirst(Δ.times, time)
     #@show idx
@@ -57,7 +71,21 @@ struct Determinant
     value::Float64
 
     function Determinant(c::Configuration, e::Expansion)
-        mat = [ e.Δ(tf - ti) for tf in c.t_f, ti in c.t_i ]
+        #if length(c) == 0
+        #    return new(Matrix{Float64}(undef, 0, 0), 1.0)
+        #end
+        
+        if true
+            if length(c) > 0 && first(c.t_f) < first(c.t_i)
+                t_f = copy(c.t_f)
+                push!(t_f, popfirst!(t_f))
+                mat = [ e.Δ(tf - ti) for tf in t_f, ti in c.t_i ]
+            else
+                mat = [ e.Δ(tf - ti) for tf in c.t_f, ti in c.t_i ]
+            end
+        else
+            mat = [ e.Δ(tf - ti) for tf in c.t_f, ti in c.t_i ]
+        end
         value = LinearAlgebra.det(mat)
         new(mat, value)
     end
@@ -79,36 +107,64 @@ function configuration_operators(c::Configuration)
     sort(vcat(creation_operators, annihilation_operators))
 end
 
-function trace(c::Configuration, e::Expansion)
+function trace(c::Configuration, e::Expansion)::Float64
+
     if length(c) == 0
-        return 1.0
+        return 2.0
     end
+
     ops = configuration_operators(c)
+    #@show ops
+    
     first_state = first(ops).operation > 0 ? 0 : 1
+    
     state = copy(first_state)
     t_i = 0.0
 
-    value = (first_state == 1) ? 1.0 : -1.0
+    #value = (first_state == 1) ? (-1.0)^(length(c)-1) : +1.0
+    value = (first_state == 1) ? -1.0 : +1.0
+    #value = (first_state == 1) ? +1.0 : -1.0
     #value = 1.0
 
+    #@show value
+    #@show first_state
+    
     for op in ops
         t_f = op.time
-        state += op.operation
-        if state == 0
-            continue
-        elseif state == 1
+
+        if state == 1
             dt = t_f - t_i
             value *= exp(-e.h * dt)
-        else
-            value = 0
-            break
         end
+        
         t_i = t_f
+        state += op.operation
+
+        if state < 0 || state > 1
+            return 0.0
+        end
+
+        #@show value
+        #@show state
     end
+
+    t_f = e.β
+
+    if state == 1
+        dt = t_f - t_i
+        value *= exp(-e.h * dt)
+    end
+    
+    #@show value
     if first_state != state
         return 0.0
     end
+    
     return value
+end
+
+function eval(c::Configuration, e::Expansion)
+    return trace(c, e) * Determinant(c, e).value
 end
 
 struct InsertMove
@@ -130,12 +186,7 @@ end
 
 function propose(move::InsertMove, c_old::Configuration, e::Expansion)
     c_new = c_old + move
-
-    old = trace(c_old, e) * Determinant(c_old, e).value
-    new = trace(c_new, e) * Determinant(c_new, e).value
-
-    R = e.β^2 / length(c_new)^2 * abs(new / old)
-    
+    R = (e.β / length(c_new))^2 * abs(eval(c_new, e) / eval(c_old, e))
     return R
 end
 
@@ -172,12 +223,7 @@ end
 
 function propose(move::RemovalMove, c_old::Configuration, e::Expansion)
     c_new = c_old + move
-
-    old = trace(c_old, e) * Determinant(c_old, e).value
-    new = trace(c_new, e) * Determinant(c_new, e).value
-
-    R = length(c_old)^2 / e.β^2 * abs(new / old)
-    
+    R = (length(c_old) / e.β)^2 * abs(eval(c_new, e) / eval(c_old, e))
     return R
 end
 
@@ -207,19 +253,24 @@ function metropolis_hastings_update(c, e)
     return c
 end
 
-struct GreensFunction
+mutable struct GreensFunction
     β::Float64
     data::Vector{Float64}
+    sign::Float64
+    function GreensFunction(β::Float64, data::Vector{Float64}, sign::Float64)
+        new(β, data, sign)
+    end
     function GreensFunction(β::Float64, data::Vector{Float64})
-        new(β, data)
+        new(β, data, 0.0)
     end
     function GreensFunction(β::Float64, N::Int64)
-        new(β, zeros(N))
+        new(β, zeros(N), 0.0)
     end
 end
 
 Base.:length(g::GreensFunction) = length(g.data)
-Base.:(*)(g::GreensFunction, scalar::Float64) = GreensFunction(g.β, g.data * scalar)
+Base.:(*)(g::GreensFunction, scalar::Float64) = GreensFunction(g.β, g.data * scalar, g.sign)
+Base.:(/)(g::GreensFunction, scalar::Float64) = GreensFunction(g.β, g.data / scalar, g.sign)
 
 function accumulate!(g::GreensFunction, time::Float64, value::Float64)
     if time < 0.0
@@ -233,14 +284,16 @@ function accumulate!(g::GreensFunction, time::Float64, value::Float64)
 end
 
 function sample_greens_function!(g::GreensFunction, c::Configuration, e::Expansion)
+
     d = Determinant(c, e)
     M = LinearAlgebra.inv(d.mat)
+
+    w = trace(c, e) * d.value
+    g.sign += sign(w)
+    
     nt = length(c)
     for i in 1:nt, j in 1:nt
-        t_i = c.t_i[i]
-        t_f = c.t_f[j]
-        #@show t_i, t_j
-        accumulate!(g, t_f - t_i, M[j, i])
+        accumulate!(g, c.t_f[i] - c.t_i[j], M[j, i])
     end
 end
 
@@ -320,20 +373,45 @@ end
 g_ref = semi_circular_g_tau(times, t, h, β)
 #@show g_ref
 
-Δ = Hybridization(times, 0.25 * t^2 * g_ref, β)
+Δ = Hybridization(times, -0.25 * t^2 * g_ref, β)
 #exit()
 
 e = Expansion(β, h, Δ)
+@show e.β
+@show e.h
 
 println("Starting CT-HYB QMC")
 
-chunk = 100
+chunk = 10
 warmup = 1000
-sampling = 10000
+sampling = 100000
 
 nt = 200
 
 c = Configuration([], [])
+@show c
+w = eval(c, e)
+@show w
+
+c = Configuration([1.0], [2.0])
+@show c
+d = Determinant(c, e)
+@show d.mat
+@show d.value
+w = eval(c, e)
+@show w
+
+c = Configuration([2.0], [1.0])
+@show c
+d = Determinant(c, e)
+@show d.mat
+@show d.value
+@show trace(c, e)
+w = eval(c, e)
+@show w
+
+#exit()
+
 g = GreensFunction(β, nt)
 
 println("Warmup sweeps $warmup with $chunk steps.")
@@ -353,18 +431,20 @@ for s in 1:sampling
         global c
         c = metropolis_hastings_update(c, e)
     end
-    # sample
-    #@show length(c)
     sample_greens_function!(g, c, e) 
 end
 
-g = g * (length(g)/sampling/β)
+@show g.sign
+
+dt = β/length(g)
+g /= -g.sign * β * dt
 
 # Plot gf, cf exact result!
 import PyPlot as plt
 
-t = range(0.0, β, nt)
-plt.plot(t, g.data, "-", label="G")
+dt = β/nt
+t = range(0.5*dt, β-0.5*dt, nt)
+plt.plot(t, g.data, ".", label="G")
 plt.plot(times, g_ref, "-", label="G (ref)")
 
 times = collect(range(0, β, 1001))
