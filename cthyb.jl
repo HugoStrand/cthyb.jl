@@ -212,53 +212,16 @@ function configuration_operators(c::Configuration)
     sort(vcat(creation_operators, annihilation_operators))
 end
 
-function trace_old(c::Configuration, e::Expansion)::Float64
-
-    if length(c) == 0
-        return 2.0
-    end
-
-    ops = configuration_operators(c)
-    first_state = first(ops).operation > 0 ? 0 : 1    
-    state = copy(first_state)
-
-    t_i = 0.0
-    value = (first_state == 1) ? -1.0 : +1.0
-    
-    for op in ops
-        if state == 1
-            value *= exp(-e.h * (op.time - t_i))
-        end
-        
-        t_i = op.time
-        state += op.operation
-
-        if state < 0 || state > 1
-            return 0.0
-        end
-    end
-
-    if first_state != state
-        return 0.0
-    end
-
-    if state == 1
-        value *= exp(-e.h * (e.β - t_i))
-    end
-
-    return value
-end
-
 function is_segment_proper(c::Configuration)
     if c.t_i[1] < c.t_f[1]
         for idx in 2:length(c)
-            if ! ( c.t_f[idx - 1] < c.t_i[idx] )
+            if !( c.t_f[idx - 1] < c.t_i[idx] ) || !( c.t_i[idx] < c.t_f[idx] )
                 return false
             end
         end
     else
         for idx in 2:length(c)
-            if ! ( c.t_i[idx - 1] < c.t_f[idx] )
+            if ! ( c.t_i[idx - 1] < c.t_f[idx] ) || !( c.t_f[idx] < c.t_i[idx] )
                 return false
             end
         end
@@ -578,7 +541,7 @@ c = Configuration([1.0, 2.0], [3.0, 4.0])
 @assert !is_segment_proper(c)
 
                 
-exit()
+#exit()
 
 
 println("Starting CT-HYB QMC")
