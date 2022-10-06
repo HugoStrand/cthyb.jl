@@ -196,22 +196,6 @@ struct Determinant
     end
 end
 
-struct Operator
-    time::Float64
-    operation::Int64
-end
-
-creation_operator(time::Float64) = Operator(time, +1)
-annihilation_operator(time::Float64) = Operator(time, -1)
-
-Base.:isless(o1::Operator, o2::Operator) = o1.time < o2.time
-
-function configuration_operators(c::Configuration)
-    creation_operators = [ creation_operator(time) for time in c.t_i ]
-    annihilation_operators = [ annihilation_operator(time) for time in c.t_f ]
-    sort(vcat(creation_operators, annihilation_operators))
-end
-
 function is_segment_proper(c::Configuration)
     if c.t_i[1] < c.t_f[1]
         for idx in 2:length(c)
