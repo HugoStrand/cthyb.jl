@@ -47,6 +47,11 @@ segments(c::Configuration) = SegmentIterator(c::Configuration)
 
 indices(s::SegmentIterator, idx::Int) = s.c.t_f[1] > s.c.t_i[1] ? (idx, idx) : (idx, mod(idx + 1, 1:length(s.c)))
 
+function Base.getindex(s::SegmentIterator, idx::Int)
+    i_idx, f_idx = indices(s, idx)
+    return Segment(c.t_i[i_idx], c.t_f[f_idx])
+end
+
 function Base.iterate(s::SegmentIterator, state=1)
     c = s.c
     l = length(c)
@@ -72,6 +77,8 @@ struct AntiSegment
     t_f::Float64
 end
 
+Base.length(s::AntiSegment, β::Float64) = s.t_i < s.t_f ? s.t_f - s.t_i : β - s.t_i + s.t_f
+
 struct AntiSegmentIterator
     c::Configuration
 end
@@ -81,6 +88,11 @@ Base.length(s::AntiSegmentIterator) = length(s.c)
 antisegments(c::Configuration) = AntiSegmentIterator(c::Configuration)
 
 indices(s::AntiSegmentIterator, idx::Int) = s.c.t_f[1] < s.c.t_i[1] ? (idx, idx) : (idx, mod(idx + 1, 1:length(s.c)))
+
+function Base.getindex(s::AntiSegmentIterator, idx::Int)
+    f_idx, i_idx = indices(s, idx)
+    return AntiSegment(c.t_f[f_idx], c.t_i[i_idx])
+end
 
 function Base.iterate(s::AntiSegmentIterator, state=1)
     c = s.c
@@ -169,6 +181,13 @@ struct Expansion
     β::Float64
     h::Float64
     Δ::Hybridization
+    moves::Vector{Any}
+    move_prop::Vector{Int}
+    move_acc::Vector{Int}
+    function Expansion(β::Float64, h::Float64, Δ::Hybridization, moves)
+       n = length(moves)
+       new(β, h, Δ, moves, zeros(n), zeros(n))
+    end
 end
 
 struct Determinant
@@ -239,7 +258,7 @@ end
 struct InsertMove
     t_i::Float64
     t_f::Float64
-    #l::Float64
+    l::Float64
 end
 
 function Base.:(+)(c::Configuration, move::InsertMove)
@@ -248,27 +267,48 @@ function Base.:(+)(c::Configuration, move::InsertMove)
     return Configuration(t_i, t_f)
 end
 
-function new_insert_move(c::Configuration, e::Expansion)
+function new_insertion_move(c::Configuration, e::Expansion)
     t_i = e.β * rand()
     t_f = e.β * rand()
-    return InsertMove(t_i, t_f)
-    
-    #if length(c) == 0
-    #    t_f = e.β * rand()
-    #    l = β
-    #else
-    #    i_idx = searchsortedfirst(c.t_i, t_i)
-    #    exit() # Fixme!
-    #end
+    return InsertMove(t_i, t_f, 0.0)
+end
 
-    ## is t_i in a segment?
+function new_segment_insertion_move(c::Configuration, e::Expansion)
+    t_i = e.β * rand()
     
-    #return InsertMove(t_i, t_f, l)
+    if length(c) == 0
+        t_f = e.β * rand()
+        l = e.β
+    else
+        s = onantisegment(t_i, c)
+        l = (s == nothing) ? 0.0 : length(Segment(t_i, s.t_f), e.β)
+        t_f = mod(t_i + l * rand(), e.β)
+    end
+    
+    @assert l >= 0 && l <= e.β
+    return InsertMove(t_i, t_f, l)
+end
+
+function new_antisegment_insertion_move(c::Configuration, e::Expansion)
+    t_i = e.β * rand()
+    
+    if length(c) == 0
+        t_f = e.β * rand()
+        l = e.β
+    else
+        s = onsegment(t_i, c)
+        l = (s == nothing) ? 0.0 : length(AntiSegment(t_i, s.t_f), e.β)
+        t_f = mod(t_i + l * rand(), e.β)
+    end
+    
+    @assert l >= 0 && l <= e.β
+    return InsertMove(t_f, t_i, l)
 end
 
 function propose(move::InsertMove, c_old::Configuration, e::Expansion)
     c_new = c_old + move
-    R = (e.β / length(c_new))^2 * abs(eval(c_new, e) / eval(c_old, e))
+    #R = (e.β / length(c_new))^2 * abs(eval(c_new, e) / eval(c_old, e))
+    R = move.l * e.β / length(c_new) * abs(eval(c_new, e) / eval(c_old, e))
     return R
 end
 
@@ -298,8 +338,36 @@ function new_removal_move(c::Configuration, e::Expansion)
     if l > 0
         i_idx = rand(1:l)
         f_idx = rand(1:l)
-        #f_idx = i_idx
-        #l = c.t_f[move.f_idx] - mod(c.t_i[move.i_idx], e.β)
+        return RemovalMove(i_idx, f_idx, l)
+    else
+        return RemovalMove(0, 0, 0.0)
+    end
+end
+
+function new_segment_removal_move(c::Configuration, e::Expansion)
+    if length(c) > 0
+        idx = rand(1:length(c))
+        i_idx, f_idx = indices(segments(c), idx)
+
+        # Lenght between segment start and next segment start!
+        s = Segment(c.t_i[i_idx], c.t_i[mod(i_idx + 1, 1:length(c))])
+        l = length(s, e.β)
+        
+        return RemovalMove(i_idx, f_idx, l)
+    else
+        return RemovalMove(0, 0, 0.0)
+    end
+end
+
+function new_antisegment_removal_move(c::Configuration, e::Expansion)
+    if length(c) > 0
+        idx = rand(1:length(c))
+        f_idx, i_idx = indices(antisegments(c), idx)
+
+        # Length between anti-segment start and next anti-segment start
+        s = AntiSegment(c.t_f[f_idx], c.t_f[mod(f_idx + 1, 1:length(c))])
+        l = length(s, e.β)
+        
         return RemovalMove(i_idx, f_idx, l)
     else
         return RemovalMove(0, 0, 0.0)
@@ -308,8 +376,8 @@ end
 
 function propose(move::RemovalMove, c_old::Configuration, e::Expansion)
     c_new = c_old + move
-    R = (length(c_old) / e.β)^2 * abs(eval(c_new, e) / eval(c_old, e))
-    #R = length(c_old) / e.β / move.l * abs(eval(c_new, e) / eval(c_old, e))
+    #R = (length(c_old) / e.β)^2 * abs(eval(c_new, e) / eval(c_old, e))
+    R = length(c_old) / e.β / move.l * abs(eval(c_new, e) / eval(c_old, e))
     return R
 end
 
@@ -318,19 +386,18 @@ function finalize(move::RemovalMove, c::Configuration)
     return c_new
 end
 
-
 function metropolis_hastings_update(c, e)
 
     # select random move
-    moves = [ new_insert_move, new_removal_move ]
     move_idx = rand(1:length(moves))
-
-    move = moves[move_idx](c, e)
+    move = e.moves[move_idx](c, e)
+    e.move_prop[move_idx] += 1
     
     R = propose(move, c, e)
     
     if R > rand()
         c = finalize(move, c)
+        e.move_acc[move_idx] += 1
     end
     
     return c
@@ -412,7 +479,19 @@ g_ref = semi_circular_g_tau(times, t, h, β)
 
 Δ = Hybridization(times, -0.25 * t^2 * g_ref, β)
 
-e = Expansion(β, h, Δ)
+moves = [
+    new_segment_insertion_move,
+    new_segment_removal_move,
+    new_antisegment_insertion_move,
+    new_antisegment_removal_move,
+]
+
+moves_old = [
+    new_insertion_move,
+    new_removal_move,
+]
+
+e = Expansion(β, h, Δ, moves)
 
 c = Configuration([1.0], [3.0])
 d = Determinant(c, e)
@@ -518,11 +597,15 @@ for idx in 1:length(c)
     @show collect(antisegments(c_tmp))
 end
 
-
 c = Configuration([1.0, 2.0], [3.0, 4.0])
 @show c
 @show is_segment_proper(c)
 @assert !is_segment_proper(c)
+
+@assert length(Segment(1.0, 2.0), 10.0) == 1.0
+@assert length(Segment(9.5, 0.5), 10.0) == 1.0
+@assert length(AntiSegment(1.0, 2.0), 10.0) == 1.0
+@assert length(AntiSegment(9.5, 0.5), 10.0) == 1.0
 
                 
 #exit()
@@ -560,6 +643,9 @@ end
 
 dt = β/length(g)
 g /= -g.sign * β * dt
+
+@show e.move_prop
+@show e.move_acc
 
 # Plot gf, cf exact result!
 import PyPlot as plt
