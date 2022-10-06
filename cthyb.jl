@@ -14,23 +14,129 @@ struct Configuration
     t_f::Vector{Float64}
     
     function Configuration(t_i, t_f)
+
         @assert length(t_i) == length(t_f)
+
         if length(t_i) == 0
             return new([], [])
         end
 
-        t_i = sort(t_i)
-        t_f = sort(t_f)
-
-        if first(t_f) < first(t_i)
-            push!(t_f, popfirst!(t_f))
-        end
-
-        return new(t_i, t_f)
+        return new(sort(t_i), sort(t_f))
     end
 end
 
 Base.:length(c::Configuration) = length(c.t_i)
+
+# -- Segment utilities
+
+struct Segment
+    t_i::Float64
+    t_f::Float64
+end
+
+Base.length(s::Segment, β::Float64) = s.t_i < s.t_f ? s.t_f - s.t_i : β - s.t_i + s.t_f
+
+struct SegmentIterator
+    c::Configuration
+end
+
+Base.eltype(::Type{SegmentIterator}) = Segment
+Base.length(s::SegmentIterator) = length(s.c)
+
+segments(c::Configuration) = SegmentIterator(c::Configuration)
+
+indices(s::SegmentIterator, idx::Int) = s.c.t_f[1] > s.c.t_i[1] ? (idx, idx) : (idx, mod(idx + 1, 1:length(s.c)))
+
+function Base.iterate(s::SegmentIterator, state=1)
+    c = s.c
+    l = length(c)
+    i_idx, f_idx = indices(s, state)
+    if i_idx <= l
+        return (Segment(c.t_i[i_idx], c.t_f[f_idx]), state + 1)
+    else
+        return nothing
+    end
+end
+
+function remove_segment!(c::Configuration, segment_idx::Int)
+    @assert 0 < segment_idx <= length(c)
+    i_idx, f_idx = indices(segments(c), segment_idx)
+    deleteat!(c.t_i, i_idx)
+    deleteat!(c.t_f, f_idx)
+end
+
+# -- Anti-segment utilities
+
+struct AntiSegment
+    t_i::Float64
+    t_f::Float64
+end
+
+struct AntiSegmentIterator
+    c::Configuration
+end
+
+Base.length(s::AntiSegmentIterator) = length(s.c)
+
+antisegments(c::Configuration) = AntiSegmentIterator(c::Configuration)
+
+indices(s::AntiSegmentIterator, idx::Int) = s.c.t_f[1] < s.c.t_i[1] ? (idx, idx) : (idx, mod(idx + 1, 1:length(s.c)))
+
+function Base.iterate(s::AntiSegmentIterator, state=1)
+    c = s.c
+    l = length(c)
+    f_idx, i_idx = indices(s, state)
+    if f_idx <= l
+        return (AntiSegment(c.t_f[f_idx], c.t_i[i_idx]), state + 1)
+    else
+        return nothing
+    end
+end
+
+function onsegment(t::Float64, s::Segment)
+    if s.t_i < s.t_f
+        return t > s.t_i && t < s.t_f
+    else
+        return t < s.t_f || t > s.t_i
+    end
+end
+
+""" O(N) algorithm. To do: Use the sorted times for O(logN) """
+function onsegment(t::Float64, c::Configuration)
+    for s in segments(c)
+        if onsegment(t, s)
+            return s
+        end
+    end
+    return nothing
+end
+
+function onantisegment(t::Float64, s::AntiSegment)
+    if s.t_i < s.t_f
+        return t > s.t_i && t < s.t_f
+    else
+        return t < s.t_f || t > s.t_i
+    end
+end
+
+""" O(N) algorithm. To do: Use the sorted times for O(logN) """
+function onantisegment(t::Float64, c::Configuration)
+    for s in antisegments(c)
+        if onantisegment(t, s)
+            return s
+        end
+    end
+    return nothing
+end
+
+function remove_antisegment!(c::Configuration, segment_idx::Int)
+    @assert 0 < segment_idx <= length(c)
+    f_idx, i_idx = indices(antisegments(c), segment_idx)
+    deleteat!(c.t_i, i_idx)
+    deleteat!(c.t_f, f_idx)
+end
+
+# -- Hybridization
 
 struct Hybridization
     times::Vector{Float64}
@@ -69,11 +175,24 @@ struct Determinant
 
     mat::Array{Float64, 2}
     value::Float64
-
+    t_i::Vector{Float64}
+    t_f::Vector{Float64}
+    
     function Determinant(c::Configuration, e::Expansion)
-        mat = [ e.Δ(tf - ti) for tf in c.t_f, ti in c.t_i ]
+
+        #mat = [ e.Δ(tf - ti) for tf in c.t_f, ti in c.t_i ]
+
+        t_f = copy(c.t_f)
+        t_i = copy(c.t_i)
+
+        if length(t_f) > 0 && first(t_f) < first(t_i)
+            push!(t_f, popfirst!(t_f))
+        end
+        
+        mat = [ e.Δ(tf - ti) for tf in t_f, ti in t_i ]
+        
         value = LinearAlgebra.det(mat)
-        new(mat, value)
+        new(mat, value, t_i, t_f)
     end
 end
 
@@ -93,7 +212,7 @@ function configuration_operators(c::Configuration)
     sort(vcat(creation_operators, annihilation_operators))
 end
 
-function trace(c::Configuration, e::Expansion)::Float64
+function trace_old(c::Configuration, e::Expansion)::Float64
 
     if length(c) == 0
         return 2.0
@@ -130,6 +249,42 @@ function trace(c::Configuration, e::Expansion)::Float64
     return value
 end
 
+function is_segment_proper(c::Configuration)
+    if c.t_i[1] < c.t_f[1]
+        for idx in 2:length(c)
+            if ! ( c.t_f[idx - 1] < c.t_i[idx] )
+                return false
+            end
+        end
+    else
+        for idx in 2:length(c)
+            if ! ( c.t_i[idx - 1] < c.t_f[idx] )
+                return false
+            end
+        end
+    end
+    return true
+end
+
+function trace(c::Configuration, e::Expansion)::Float64
+
+    if length(c) == 0
+        return 2.0
+    end
+
+    if !is_segment_proper(c)
+        return 0.0
+    end
+    
+    value = c.t_f[1] < c.t_i[1] ? -1.0 : +1.0
+    
+    for s in segments(c)
+        value *= exp(-e.h * length(s, e.β))
+    end
+
+    return value
+end
+
 function eval(c::Configuration, e::Expansion)
     return trace(c, e) * Determinant(c, e).value
 end
@@ -137,6 +292,7 @@ end
 struct InsertMove
     t_i::Float64
     t_f::Float64
+    #l::Float64
 end
 
 function Base.:(+)(c::Configuration, move::InsertMove)
@@ -149,6 +305,18 @@ function new_insert_move(c::Configuration, e::Expansion)
     t_i = e.β * rand()
     t_f = e.β * rand()
     return InsertMove(t_i, t_f)
+    
+    #if length(c) == 0
+    #    t_f = e.β * rand()
+    #    l = β
+    #else
+    #    i_idx = searchsortedfirst(c.t_i, t_i)
+    #    exit() # Fixme!
+    #end
+
+    ## is t_i in a segment?
+    
+    #return InsertMove(t_i, t_f, l)
 end
 
 function propose(move::InsertMove, c_old::Configuration, e::Expansion)
@@ -165,6 +333,7 @@ end
 struct RemovalMove
     i_idx::UInt64
     f_idx::UInt64
+    l::Float64
 end
 
 function Base.:(+)(c::Configuration, move::RemovalMove)
@@ -182,15 +351,18 @@ function new_removal_move(c::Configuration, e::Expansion)
     if l > 0
         i_idx = rand(1:l)
         f_idx = rand(1:l)
-        return RemovalMove(i_idx, f_idx)
+        #f_idx = i_idx
+        #l = c.t_f[move.f_idx] - mod(c.t_i[move.i_idx], e.β)
+        return RemovalMove(i_idx, f_idx, l)
     else
-        return RemovalMove(0, 0)
+        return RemovalMove(0, 0, 0.0)
     end
 end
 
 function propose(move::RemovalMove, c_old::Configuration, e::Expansion)
     c_new = c_old + move
     R = (length(c_old) / e.β)^2 * abs(eval(c_new, e) / eval(c_old, e))
+    #R = length(c_old) / e.β / move.l * abs(eval(c_new, e) / eval(c_old, e))
     return R
 end
 
@@ -257,7 +429,7 @@ function sample_greens_function!(g::GreensFunction, c::Configuration, e::Expansi
     
     nt = length(c)
     for i in 1:nt, j in 1:nt
-        accumulate!(g, c.t_f[i] - c.t_i[j], M[j, i])
+        accumulate!(g, d.t_f[i] - d.t_i[j], M[j, i])
     end
 end
 
@@ -294,6 +466,120 @@ g_ref = semi_circular_g_tau(times, t, h, β)
 Δ = Hybridization(times, -0.25 * t^2 * g_ref, β)
 
 e = Expansion(β, h, Δ)
+
+c = Configuration([1.0], [3.0])
+d = Determinant(c, e)
+t = trace(c, e)
+@show c
+@show d.mat
+@show d.value
+@show t
+@show is_segment_proper(c)
+
+c = Configuration([19.0], [1.0])
+d = Determinant(c, e)
+t = trace(c, e)
+@show c
+@show d.mat
+@show d.value
+@show t
+@show is_segment_proper(c)
+
+
+c = Configuration([1.0, 5.0], [3.0, 7.0])
+d = Determinant(c, e)
+t = trace(c, e)
+@show c
+@show d.mat
+@show d.value
+@show t
+@show is_segment_proper(c)
+
+
+c = Configuration([2.0, 19.0], [5.0, 1.0])
+d = Determinant(c, e)
+t = trace(c, e)
+@show c
+@show d.mat
+@show d.value
+@show t
+@assert is_segment_proper(c)
+
+#exit()
+c = Configuration([1.0, 3.0], [2.0, 4.0])
+
+@show c
+@assert is_segment_proper(c)
+
+
+println("Segments")
+for s in segments(c)
+    @show s
+end
+
+println("Anti-segments")
+for s in antisegments(c)
+    @show s
+end
+
+c = Configuration([1.0, 3.0, 5.0], [0.5, 2.0, 4.0])
+
+@show c
+@assert is_segment_proper(c)
+
+
+println("Segments")
+for s in segments(c)
+    @show s
+end
+
+println("Anti-segments")
+for s in antisegments(c)
+    @show s
+end
+
+@show onsegment(1.5, c)
+@show onsegment(3.5, c)
+@show onsegment(6.0, c)
+@show onsegment(0.2, c)
+@show onsegment(0.6, c)
+@show onsegment(2.5, c)
+@show onsegment(4.5, c)
+
+@show onantisegment(1.5, c)
+@show onantisegment(3.5, c)
+@show onantisegment(6.0, c)
+@show onantisegment(0.2, c)
+@show onantisegment(0.6, c)
+@show onantisegment(2.5, c)
+@show onantisegment(4.5, c)
+
+    
+@show indices(segments(c), 1)
+@show indices(segments(c), 2)
+@show indices(segments(c), 3)
+
+for idx in 1:length(c)
+    c_tmp = deepcopy(c)
+    remove_segment!(c_tmp, idx)
+    @show collect(segments(c_tmp))
+end
+
+for idx in 1:length(c)
+    c_tmp = deepcopy(c)
+    remove_antisegment!(c_tmp, idx)
+    @show collect(antisegments(c_tmp))
+end
+
+
+c = Configuration([1.0, 2.0], [3.0, 4.0])
+@show c
+@show is_segment_proper(c)
+@assert !is_segment_proper(c)
+
+                
+exit()
+
 
 println("Starting CT-HYB QMC")
 
